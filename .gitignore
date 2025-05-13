@@ -1,0 +1,17 @@
+# Node / Next.js
+node_modules/
+.next/
+web/.next/
+
+# 環境変数
+*.env
+*.env.*
+web/.env.local
+
+# ローカルキャッシュ
+.DS_Store
+*.log
+
+# Terraform
+*.tfstate*
+.terraform/ 
