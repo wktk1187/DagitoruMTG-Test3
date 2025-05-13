@@ -26,10 +26,8 @@ export async function POST(req: NextRequest) {
 
   // URL verification challenge は署名検証前に応答
   if (body?.type === 'url_verification') {
-    return new NextResponse(body.challenge, {
-      status: 200,
-      headers: { 'Content-Type': 'text/plain' },
-    });
+    // Slack の URL Verification では { "challenge": "..." } を JSON で返却する必要がある
+    return NextResponse.json({ challenge: body.challenge });
   }
 
   // 署名検証
