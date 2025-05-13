@@ -4,6 +4,8 @@ import { storage, pubsub } from '@/libs/gcp';
 import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 
+export const runtime = 'nodejs';
+
 export async function POST(req: NextRequest) {
   // Slack payload を JSON で受信
   const body = await req.json();
