@@ -7,11 +7,22 @@ import { pipeline } from 'node:stream/promises';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  // Slack payload を JSON で受信
-  const body = await req.json();
-  const rawBody = JSON.stringify(body); // 署名検証用
+  // Slack からの生ボディ文字列を取得（署名検証用にそのまま使用）
+  const rawBody = await req.text();
 
-  // URL verification challenge
+  // JSON へパース（urlencoded 対応のため try-catch）
+  let body: any = {};
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    // urlencoded の場合は payload=xxx 形式
+    const params = new URLSearchParams(rawBody);
+    if (params.has('payload')) {
+      body = JSON.parse(params.get('payload') as string);
+    }
+  }
+
+  // URL verification challenge は署名検証前に応答
   if (body?.type === 'url_verification') {
     return NextResponse.json({ challenge: body.challenge });
   }
