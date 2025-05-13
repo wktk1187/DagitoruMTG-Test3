@@ -26,14 +26,30 @@ export async function POST(req: NextRequest) {
 
   // URL verification challenge は署名検証前に応答
   if (body?.type === 'url_verification') {
-    // Slack の URL Verification では challenge 文字列をプレーンテキストで返す
-    const c: string = (body.challenge ?? '').toString().trim();
-    return new NextResponse(c, {
+    const receivedChallenge = body.challenge;
+    const challengeToRespond = (receivedChallenge ?? '').toString().trim();
+
+    // --- ここからログ追加 ---
+    console.log('[URL_VERIFICATION] Received rawBody:', rawBody);
+    console.log('[URL_VERIFICATION] Parsed body:', JSON.stringify(body));
+    console.log('[URL_VERIFICATION] Received challenge:', receivedChallenge);
+    console.log('[URL_VERIFICATION] Challenge to respond:', challengeToRespond);
+    // --- ここまでログ追加 ---
+
+    const response = new Response(challengeToRespond, {
       status: 200,
-      headers: {
-        'Content-Type': 'text/plain',
-      },
+      headers: { 'Content-Type': 'text/plain' },
     });
+
+    // --- レスポンスヘッダーのログも追加 ---
+    const responseHeaders: { [key: string]: string } = {};
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+    console.log('[URL_VERIFICATION] Response headers to be sent:', JSON.stringify(responseHeaders));
+    // --- ここまでログ追加 ---
+
+    return response;
   }
 
   // 署名検証
