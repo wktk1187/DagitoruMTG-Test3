@@ -27,9 +27,13 @@ export async function POST(req: NextRequest) {
   // URL verification challenge は署名検証前に応答
   if (body?.type === 'url_verification') {
     // Slack の URL Verification では challenge 文字列をプレーンテキストで返す
-    return new Response(body.challenge, {
+    const c: string = (body.challenge ?? '').toString().trim();
+    return new Response(c, {
       status: 200,
-      headers: { 'Content-Type': 'text/plain' },
+      headers: {
+        'Content-Type': 'text/plain',
+        'Content-Length': String(Buffer.byteLength(c)), // 明示
+      },
     });
   }
 
