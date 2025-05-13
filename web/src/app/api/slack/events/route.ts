@@ -32,7 +32,6 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         'Content-Type': 'text/plain',
-        'Content-Length': String(Buffer.byteLength(c)), // 明示
       },
     });
   }
