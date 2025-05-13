@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   // Slack からの生ボディ文字列を取得（署名検証用にそのまま使用）
@@ -24,7 +25,10 @@ export async function POST(req: NextRequest) {
 
   // URL verification challenge は署名検証前に応答
   if (body?.type === 'url_verification') {
-    return NextResponse.json({ challenge: body.challenge });
+    return new NextResponse(body.challenge, {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain' },
+    });
   }
 
   // 署名検証
