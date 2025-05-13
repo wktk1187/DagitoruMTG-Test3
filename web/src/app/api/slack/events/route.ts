@@ -12,6 +12,7 @@ export async function POST(req: NextRequest) {
   const rawBody = await req.text();
 
   // JSON へパース（urlencoded 対応のため try-catch）
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let body: any = {};
   try {
     body = JSON.parse(rawBody);
