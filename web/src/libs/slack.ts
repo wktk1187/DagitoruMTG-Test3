@@ -1,6 +1,5 @@
 import { WebClient } from '@slack/web-api';
 import crypto from 'node:crypto';
-import { NextRequest } from 'next/server';
 
 const signingSecret = process.env.SLACK_SIGNING_SECRET as string | undefined;
 if (!signingSecret) {
@@ -9,11 +8,11 @@ if (!signingSecret) {
 
 export const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 
-export function verifySlackSignature(req: NextRequest, rawBody: string): boolean {
+export function verifySlackSignature(headers: Headers, rawBody: string): boolean {
   if (!signingSecret) return false;
 
-  const timestamp = req.headers.get('x-slack-request-timestamp');
-  const slackSignature = req.headers.get('x-slack-signature');
+  const timestamp = headers.get('x-slack-request-timestamp');
+  const slackSignature = headers.get('x-slack-signature');
   if (!timestamp || !slackSignature) return false;
 
   // Replay attack protection (5 分以内)

@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
   if (body?.type === 'url_verification') {
     // Slack の URL Verification では challenge 文字列をプレーンテキストで返す
     const c: string = (body.challenge ?? '').toString().trim();
-    return new Response(c, {
+    return new NextResponse(c, {
       status: 200,
       headers: {
         'Content-Type': 'text/plain',
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   }
 
   // 署名検証
-  if (!verifySlackSignature(req, rawBody)) {
+  if (!verifySlackSignature(req.headers, rawBody)) {
     return new NextResponse('Invalid signature', { status: 401 });
   }
 
