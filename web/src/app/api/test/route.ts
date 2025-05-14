@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   let body = {};
   try {
     body = await req.json();
-  } catch (e) {
+  } catch (_e) {
     console.log('Could not parse JSON body for /api/test POST, or no body provided.');
   }
   return NextResponse.json({ message: 'Hello from test API POST v2 aklsjdfhaksdjfhalksdjfh', receivedBody: body });
