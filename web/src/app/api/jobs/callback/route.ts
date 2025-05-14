@@ -1,46 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { storage } from '@/libs/gcp';
-import { summarizeTranscript } from '@/libs/gemini';
-import { createMeetingPage } from '@/libs/notion';
+import { summarizeTranscript, callGeminiToSummarize } from '@/libs/gemini';
+import { createMeetingPage, createNotionPageWithSummary } from '@/libs/notion';
 import { slackClient } from '@/libs/slack';
 
+// Helper function to extract meeting info from text
+function extractMeetingInfo(text: string | undefined): { date: string; client: string; consultant: string } {
+  const info = { date: '不明', client: '不明', consultant: '不明' };
+  if (!text) return info;
+  const dateMatch = text.match(/(\d{4}[年\/-]\d{1,2}[月\/-]\d{1,2}日?)/);
+  if (dateMatch) info.date = dateMatch[1];
+  const clientMatch = text.match(/(?:クライアント|顧客)[:：\s]*([^\s]+)/);
+  if (clientMatch) info.client = clientMatch[1];
+  const consultantMatch = text.match(/(?:コンサルタント|担当)[:：\s]*([^\s]+)/);
+  if (consultantMatch) info.consultant = consultantMatch[1];
+  return info;
+}
+
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('authorization');
-  if (process.env.CALLBACK_SECRET && secret !== `Bearer ${process.env.CALLBACK_SECRET}`) {
-    return new NextResponse('Unauthorized', { status: 401 });
-  }
-
-  const body = await req.json();
-  const { transcriptUri, threadTs, channelId } = body;
-  console.log('[Callback]', body);
-
   try {
-    // 1. transcript.json 読み込み
-    const { bucketName, objectPath } = parseGsUri(transcriptUri);
-    const file = storage.bucket(bucketName).file(objectPath);
-    const [contents] = await file.download();
-    const transcriptJson = contents.toString();
+    console.log('Received callback from Cloud Run:', req.headers.get('content-type'));
+    const body = await req.json();
+    console.log('Callback body parsed:', body);
 
-    // 2. Gemini で要約
-    const markdown = await summarizeTranscript(transcriptJson);
+    // TODO: Implement shared secret verification for requests from Cloud Run
+    // const sharedSecret = process.env.CALLBACK_FROM_CLOUD_RUN_SECRET;
+    // const requestSecret = req.headers.get('X-Callback-Secret');
+    // if (!sharedSecret || !requestSecret || sharedSecret !== requestSecret) {
+    //   console.error('Unauthorized callback request');
+    //   return new NextResponse('Unauthorized', { status: 401 });
+    // }
 
-    // 3. Notion ページ作成
-    const title = extractTitle(markdown) || '会議録';
-    const pageUrl = await createMeetingPage({ title, markdown, transcriptUrl: transcriptUri });
+    const {
+      transcript,
+      jobId,
+      slackFileId,
+      originalFileName,
+      slackChannelId,
+      slackThreadTs,
+      slackFilePermalink,
+      slackUserId,
+      originalMessageText,
+      eventTs,
+    } = body;
 
-    // 4. Slack へ完了通知
-    if (threadTs) {
+    if (transcript === undefined || transcript === null) { // Check for undefined or null
+      console.error('Transcript missing in callback from Cloud Run for job:', jobId);
+      if (slackChannelId && slackThreadTs) {
+        await slackClient.chat.postMessage({
+          channel: slackChannelId,
+          thread_ts: slackThreadTs,
+          text: `:warning: 「${originalFileName || 'ファイル'}」の文字起こし処理でエラーが発生しました。文字起こし結果がありません。`,
+        });
+      }
+      return new NextResponse('Transcript missing', { status: 400 });
+    }
+
+    const meetingInfo = extractMeetingInfo(originalMessageText);
+    console.log('Extracted meeting info for Notion:', meetingInfo);
+
+    console.log('Calling Gemini API for summary for job:', jobId);
+    const summary = await callGeminiToSummarize(transcript, originalMessageText, meetingInfo);
+    console.log('Gemini summary received for job:', jobId, summary);
+    // TODO: Map summary content to Notion properties structure
+
+    console.log('Creating Notion page for job:', jobId);
+    const notionPageUrl = await createNotionPageWithSummary({
+      title: originalFileName || `議事録 (${meetingInfo.date})`,
+      meetingDate: meetingInfo.date,
+      clientName: meetingInfo.client,
+      consultantName: meetingInfo.consultant,
+      slackFileUrl: slackFilePermalink,
+      transcriptFullText: transcript,
+      summarySections: summary, 
+      // Add any other info needed by createNotionPageWithSummary
+    });
+    console.log('Notion page created for job:', jobId, notionPageUrl);
+
+    if (slackChannelId && slackThreadTs) {
       await slackClient.chat.postMessage({
-        channel: channelId,
-        thread_ts: threadTs,
-        text: `:memo: 議事録が完成しました！\n${pageUrl}`,
+        channel: slackChannelId,
+        thread_ts: slackThreadTs,
+        text: `:white_check_mark: 「${originalFileName || 'ファイル'}」の議事録を作成し、Notionに保存しました！\n${notionPageUrl}`,
       });
     }
 
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    console.error('callback error', e);
-    return new NextResponse('Internal Error', { status: 500 });
+    return NextResponse.json({ ok: true, notionPageUrl });
+
+  } catch (error: any) {
+    console.error('Error in jobs/callback:', error.message, error.stack);
+    // Avoid sending detailed error back to client unless necessary
+    return new NextResponse(`Internal Server Error`, { status: 500 });
   }
 }
 

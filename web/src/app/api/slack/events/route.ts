@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySlackSignature, slackClient } from '@/libs/slack';
-import { storage, pubsub } from '@/libs/gcp';
+import { PubSub } from '@google-cloud/pubsub';
 import { randomUUID } from 'node:crypto';
-import { pipeline } from 'node:stream/promises';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+const pubsub = new PubSub();
 
 export async function POST(req: NextRequest) {
   // Slack からの生ボディ文字列を取得（署名検証用にそのまま使用）
@@ -62,75 +63,83 @@ export async function POST(req: NextRequest) {
   // ここからイベント処理
   if (payload?.event?.type === 'file_shared') {
     try {
-      await handleFileShared(payload.event);
-    } catch (e) {
+      await handleFileShared(payload.event, payload.event.text || '');
+    } catch (e: any) {
       console.error('file_shared handling error', e);
-      return new NextResponse('Internal Error', { status: 500 });
+      return new NextResponse(`Error handling file_shared: ${e.message}`, { status: 500 });
     }
   }
 
   return NextResponse.json({ ok: true });
 }
 
-type FileSharedEvent = {
-  file_id?: string;
-  file?: { id: string };
-  channel_id?: string;
-  message_ts?: string;
+type SlackFileSharedEvent = {
+  file_id: string;
+  user_id: string; 
+  file: {
+    id: string;
+    name: string;
+    filetype: string; 
+    url_private_download: string;
+    permalink: string; 
+  };
+  channel_id: string;
+  event_ts: string; 
+  text?: string; 
 };
 
-async function handleFileShared(event: FileSharedEvent) {
-  const fileId = event.file_id || event.file?.id;
+async function handleFileShared(event: SlackFileSharedEvent, originalMessageText: string) {
+  console.log('Handling file_shared event:', JSON.stringify(event, null, 2));
+  console.log('Original message text (if any from event.text):', originalMessageText);
+
+  const fileId = event.file?.id || event.file_id;
+  const fileInfo = event.file;
   const channelId = event.channel_id;
-  if (!fileId) {
-    throw new Error('file_id not found');
+  const threadTs = event.event_ts; 
+
+  if (!fileId || !channelId || !threadTs || !fileInfo || !fileInfo.url_private_download) {
+    console.error('Essential event information or file details missing', { fileId, channelId, threadTs, fileInfo });
+    throw new Error('Essential event information or file details missing for file processing.');
   }
 
-  // ファイル情報取得
-  const fileInfo = await slackClient.files.info({ file: fileId });
-  // slack SDK 型定義が限定的なため any キャスト
-  const file = (fileInfo as unknown as { file: { url_private_download: string; name?: string } }).file;
-  if (!file || !file.url_private_download) {
-    throw new Error('invalid file info');
-  }
-  const downloadUrl: string = file.url_private_download;
-
-  // GCS パス決定
-  const now = new Date();
-  const timeStr = now.toISOString().replace(/[-:]/g, '').slice(0, 15); // YYYYMMDDTHHmm
-  const prefix = `meetings/${timeStr}_${fileId}`;
-  const bucketName = process.env.GCS_BUCKET as string;
-  if (!bucketName) throw new Error('GCS_BUCKET not set');
-
-  const bucket = storage.bucket(bucketName);
-  const destFile = bucket.file(`${prefix}/video.mp4`);
-
-  // Slack からストリームダウンロード → GCS へストリームアップロード
-  const res = await fetch(downloadUrl, {
-    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-  });
-  if (!res.ok || !res.body) throw new Error('Download failed');
-
-  await pipeline(res.body as unknown as NodeJS.ReadableStream, destFile.createWriteStream());
-
-  // Slack へ Upload OK (スレッド返信)
-  if (channelId && event.message_ts) {
+  try {
     await slackClient.chat.postMessage({
       channel: channelId,
-      thread_ts: event.message_ts,
-      text: ':white_check_mark: Upload OK',
+      thread_ts: threadTs,
+      text: `:hourglass_flowing_sand: ファイル「${fileInfo.name}」を受け付けました。処理を開始します...`,
     });
+  } catch (slackError) {
+    console.error('Failed to post initial ack message to Slack:', slackError);
   }
 
-  // Pub/Sub Publish
   const topicName = process.env.PUBSUB_TOPIC || 'meeting-jobs';
+  if (!topicName) {
+    throw new Error("PUBSUB_TOPIC environment variable is not set.");
+  }
   const jobId = randomUUID();
-  const message = {
+
+  const pubSubMessagePayload = {
     jobId,
-    videoGcsUri: `gs://${bucketName}/${prefix}/video.mp4`,
-    fileId,
-    threadTs: event.message_ts || '',
-    uploadedAt: now.toISOString(),
+    slackFileId: fileId,
+    slackFileDownloadUrl: fileInfo.url_private_download,
+    slackBotToken: process.env.SLACK_BOT_TOKEN,
+    originalFileName: fileInfo.name,
+    originalFileExtension: fileInfo.filetype,
+    slackChannelId: channelId,
+    slackThreadTs: threadTs,
+    slackFilePermalink: fileInfo.permalink,
+    slackUserId: event.user_id,
+    originalMessageText: originalMessageText,
+    eventTs: event.event_ts,
   };
-  await pubsub.topic(topicName).publishMessage({ json: message });
+
+  console.log('Publishing message to Pub/Sub topic:', topicName, JSON.stringify(pubSubMessagePayload, null, 2));
+
+  try {
+    await pubsub.topic(topicName).publishMessage({ json: pubSubMessagePayload });
+    console.log(`Message ${jobId} published to ${topicName}.`);
+  } catch (pubsubError) {
+    console.error(`Failed to publish message to Pub/Sub topic ${topicName}:`, pubsubError);
+    throw new Error(`Failed to publish message to Pub/Sub: ${pubsubError}`);
+  }
 } 
