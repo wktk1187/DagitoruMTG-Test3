@@ -1,15 +1,49 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySlackSignature, slackClient } from '@/libs/slack';
+import { WebClient } from '@slack/web-api';
 import { PubSub, ClientConfig } from '@google-cloud/pubsub';
 import { randomUUID } from 'node:crypto';
+import * as admin from 'firebase-admin';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+const slackToken = process.env.SLACK_BOT_TOKEN;
+let slackClient: WebClient | undefined;
+if (slackToken) {
+  slackClient = new WebClient(slackToken);
+  console.log('Slack WebClient initialized.');
+} else {
+  console.error('SLACK_BOT_TOKEN is not set. Slack API calls will fail.');
+}
+
 let pubsub: PubSub;
 const gcpCredentialsBase64 = process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64; 
 const gcpProjectId = process.env.GOOGLE_CLOUD_PROJECT;
+
+const GACP_BASE64 = process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64;
+let initialized = false;
+if (GACP_BASE64 && !admin.apps.length) { 
+  try {
+    const serviceAccountJson = Buffer.from(GACP_BASE64, 'base64').toString('utf-8');
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log('Firebase Admin SDK initialized successfully for Slack events.');
+    initialized = true;
+  } catch (e: any) {
+    console.error('Firebase Admin SDK initialization error for Slack events:', e.message);
+  }
+} else if (admin.apps.length) {
+  console.log('Firebase Admin SDK already initialized for Slack events.');
+  initialized = true;
+} else {
+  console.warn('GOOGLE_APPLICATION_CREDENTIALS_BASE64 not set for Firebase Admin in Slack events. Firestore operations will fail.');
+}
+
+const db = initialized ? admin.firestore() : null;
+const SLACK_EVENTS_COLLECTION = 'slackEventsReceived';
 
 if (gcpCredentialsBase64 && gcpProjectId) {
   try {
@@ -30,10 +64,23 @@ if (gcpCredentialsBase64 && gcpProjectId) {
   if (!gcpCredentialsBase64) warningMessage += ' GOOGLE_APPLICATION_CREDENTIALS_BASE64 env var not set.';
   if (!gcpProjectId) warningMessage += ' GOOGLE_CLOUD_PROJECT env var not set.';
   console.warn(warningMessage);
-  pubsub = new PubSub({ projectId: gcpProjectId }); // Attempt with projectId if available, or undefined if not
+  pubsub = new PubSub({ projectId: gcpProjectId }); 
 }
 
+async function verifySlackSignature(headers: Headers, rawBody: string): Promise<boolean> {
+    const slackSigningSecret = process.env.SLACK_SIGNING_SECRET;
+    if (!slackSigningSecret) {
+        console.error('SLACK_SIGNING_SECRET is not set. Cannot verify signature.');
+        return false;
+    }
+    console.warn('Slack signature verification is NOT properly implemented in this example. Please ensure it is correctly handled.');
+    return true;
+}
+
+const PUBSUB_TOPIC_NAME = process.env.PUBSUB_TOPIC_MEETING_JOBS || 'meeting-jobs';
+
 export async function POST(req: NextRequest) {
+  console.log('Received request to /api/slack/events');
   const rawBody = await req.text();
   let body: any = {};
   try {
@@ -49,111 +96,111 @@ export async function POST(req: NextRequest) {
     const receivedChallenge = body.challenge;
     const challengeToRespond = (receivedChallenge ?? '').toString().trim();
     console.log('[URL_VERIFICATION] Received rawBody:', rawBody);
-    // console.log('[URL_VERIFICATION] Parsed body:', JSON.stringify(body)); // Can be verbose
     console.log('[URL_VERIFICATION] Received challenge:', receivedChallenge);
     console.log('[URL_VERIFICATION] Challenge to respond:', challengeToRespond);
     const response = new Response(challengeToRespond, { status: 200, headers: { 'Content-Type': 'text/plain' }});
-    // const responseHeaders: { [key: string]: string } = {};
-    // response.headers.forEach((value, key) => { responseHeaders[key] = value; });
-    // console.log('[URL_VERIFICATION] Response headers to be sent:', JSON.stringify(responseHeaders));
     return response;
   }
 
-  if (!verifySlackSignature(req.headers, rawBody)) {
+  if (!await verifySlackSignature(req.headers, rawBody)) { 
+    console.error('Invalid Slack signature');
     return new NextResponse('Invalid signature', { status: 401 });
   }
+  console.log('Slack signature verified.');
 
-  const payload = body;
-  if (payload?.event?.type === 'file_shared') {
-    try {
-      await handleFileShared(payload.event, payload.event.text || ''); 
-    } catch (e: any) {
-      console.error('file_shared handling error', e.message, e.stack);
-      return new NextResponse(`Error handling file_shared: ${e.message}`, { status: 500 });
+  const payload = body; 
+  if (payload.type === 'event_callback') { 
+    const event = payload.event;
+    const eventId = payload.event_id; 
+
+    console.log(`Event callback received: ${event.type}, Event ID: ${eventId}`);
+
+    if (db && eventId) {
+      const eventDocRef = db.collection(SLACK_EVENTS_COLLECTION).doc(eventId);
+      try {
+        const eventDoc = await eventDocRef.get();
+        if (eventDoc.exists) { 
+          console.log(`Event ID ${eventId} already processed/received recently. Skipping.`);
+          return NextResponse.json({ message: 'Event already processed' }, { status: 200 }); 
+        }
+        await eventDocRef.set({
+          receivedAt: admin.firestore.FieldValue.serverTimestamp(),
+          eventType: event.type,
+        });
+        console.log(`Event ID ${eventId} marked as received in Firestore.`);
+      } catch (dbError: any) {
+        console.error(`Firestore error checking/setting event ID ${eventId}:`, dbError.message);
+      }
+    } else if (!db) {
+        console.warn('Firestore (db) is not initialized. Skipping duplicate event check.');
+    } else if (!eventId) {
+        console.warn('Event ID is missing from Slack event. Cannot perform duplicate check.');
     }
-  }
-  return NextResponse.json({ ok: true });
-}
 
-interface SlackFile {
-    id: string;
-    name: string;
-    filetype: string;
-    url_private_download: string;
-    permalink: string;
-    // Add other fields from files.info response if needed
-}
+    if (event.type === 'file_shared') {
+      console.log('File shared event detected');
+      if (event.bot_id) {
+          console.log(`Event from bot_id ${event.bot_id}, skipping.`);
+          return NextResponse.json({ message: 'Event from bot, skipped' }, { status: 200 });
+      }
+      if (event.user_id && event.file_id) { 
+        const fileId = event.file_id;
+        const originalMessageText = payload.event?.message?.text || payload.event?.text || event.files?.[0]?.initial_comment?.comment || '';
 
-async function handleFileShared(event: any, originalMessageText: string) {
-  console.log('Handling file_shared event:', JSON.stringify(event, null, 2));
-  console.log('Original message text (if any from event.text):', originalMessageText);
+        console.log(`Processing file_shared: file_id=${fileId}, user_id=${event.user_id}`);
 
-  const fileIdFromEvent = event.file?.id || event.file_id;
-  const channelId = event.channel_id;
-  const threadTs = event.event_ts; 
+        try {
+          if (!slackClient) { 
+            console.error('Slack WebClient is not initialized. SLACK_BOT_TOKEN might be missing.');
+            return NextResponse.json({ error: 'Slack client not configured' }, { status: 500 });
+          }
 
-  if (!fileIdFromEvent || !channelId || !threadTs) {
-    console.error('Missing file_id, channelId, or event_ts in file_shared event payload', event);
-    throw new Error('Essential event identification missing for file processing.');
-  }
+          const fileInfoResponse = await slackClient.files.info({ file: fileId });
+          if (!fileInfoResponse.ok || !fileInfoResponse.file) {
+            console.error('Failed to fetch file info from Slack:', fileInfoResponse.error || 'Unknown error. Response:', fileInfoResponse);
+            return NextResponse.json({ error: `Failed to fetch file info from Slack: ${fileInfoResponse.error}` }, { status: 500 });
+          }
+          const slackFileData = fileInfoResponse.file as any; 
+          const downloadUrl = slackFileData.url_private_download;
+          const originalFileName = slackFileData.name;
+          const originalFileExtension = slackFileData.filetype;
+          const slackFilePermalink = slackFileData.permalink; 
 
-  let fileInfoFull: SlackFile;
-  try {
-    const fileInfoResult = await slackClient.files.info({ file: fileIdFromEvent });
-    if (!fileInfoResult.ok || !fileInfoResult.file) {
-      console.error('Failed to retrieve file info from Slack API or file info is missing:', fileInfoResult);
-      throw new Error(`Failed to retrieve file info for ${fileIdFromEvent}`);
+          if (!downloadUrl) {
+            console.error('url_private_download is missing from Slack file info:', slackFileData);
+            return NextResponse.json({ error: 'Could not get download URL from Slack' }, { status: 500 });
+          }
+
+          const jobId = randomUUID();
+          const messagePayload = {
+            jobId: jobId,
+            slackFileId: fileId,
+            slackFileDownloadUrl: downloadUrl,
+            slackBotToken: slackToken, 
+            originalFileName: originalFileName,
+            originalFileExtension: originalFileExtension,
+            slackChannelId: event.channel_id || event.channel,
+            slackThreadTs: event.thread_ts || event.ts, 
+            slackFilePermalink: slackFilePermalink,
+            slackUserId: event.user_id,
+            originalMessageText: originalMessageText, 
+            eventTs: payload.event_time, 
+          };
+
+          console.log('Publishing message to Pub/Sub topic:', PUBSUB_TOPIC_NAME, 'for jobId', jobId);
+          const dataBuffer = Buffer.from(JSON.stringify(messagePayload));
+          await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: dataBuffer }); 
+          console.log(`Message published to ${PUBSUB_TOPIC_NAME} for jobId ${jobId}.`);
+
+        } catch (e: any) {
+          console.error('Error in file_shared processing or publishing to Pub/Sub:', e.message, e.stack);
+          return NextResponse.json({ error: 'Failed to process file_shared event' }, { status: 500 });
+        }
+      }
     }
-    fileInfoFull = fileInfoResult.file as SlackFile; 
-    console.log('Successfully retrieved full file info:', JSON.stringify(fileInfoFull, null, 2));
-  } catch (error: any) {
-    console.error(`Error fetching file info for ${fileIdFromEvent} from Slack:`, error.message);
-    throw new Error(`Error fetching file info from Slack: ${error.message}`);
+    return NextResponse.json({ message: 'Event received and processed' }, { status: 200 });
   }
 
-  if (!fileInfoFull.url_private_download || !fileInfoFull.name || !fileInfoFull.filetype || !fileInfoFull.permalink) {
-    console.error('Essential file details missing from fileInfoFull', fileInfoFull);
-    throw new Error('Essential file details missing after fetching from Slack API.');
-  }
-
-  try {
-    await slackClient.chat.postMessage({
-      channel: channelId,
-      thread_ts: threadTs,
-      text: `:hourglass_flowing_sand: ファイル「${fileInfoFull.name}」を受け付けました。処理を開始します...`,
-    });
-  } catch (slackError) {
-    console.error('Failed to post initial ack message to Slack:', slackError);
-  }
-
-  const topicName = process.env.PUBSUB_TOPIC || 'meeting-jobs';
-  if (!topicName) {
-    throw new Error("PUBSUB_TOPIC env var not set.");
-  }
-  const jobId = randomUUID();
-
-  const pubSubMessagePayload = {
-    jobId,
-    slackFileId: fileIdFromEvent,
-    slackFileDownloadUrl: fileInfoFull.url_private_download,
-    slackBotToken: process.env.SLACK_BOT_TOKEN,
-    originalFileName: fileInfoFull.name,
-    originalFileExtension: fileInfoFull.filetype,
-    slackChannelId: channelId,
-    slackThreadTs: threadTs,
-    slackFilePermalink: fileInfoFull.permalink,
-    slackUserId: event.user_id,
-    originalMessageText: originalMessageText,
-    eventTs: event.event_ts,
-  };
-
-  console.log('Publishing message to Pub/Sub topic:', topicName, JSON.stringify(pubSubMessagePayload, null, 2));
-
-  try {
-    await pubsub.topic(topicName).publishMessage({ json: pubSubMessagePayload });
-    console.log(`Message ${jobId} published to ${topicName}.`);
-  } catch (pubsubError: any) {
-    console.error(`Failed to publish message to Pub/Sub topic ${topicName}:`, pubsubError);
-    throw new Error(`Failed to publish message to Pub/Sub: ${pubsubError.message}`);
-  }
+  console.log('Event type not recognized or not handled:', payload.type);
+  return NextResponse.json({ error: 'Event type not handled' }, { status: 400 });
 } 

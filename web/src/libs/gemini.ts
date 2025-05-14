@@ -1,11 +1,30 @@
 import { VertexAI } from '@google-cloud/vertexai';
+import { GoogleAuthOptions as VertexGoogleAuthOptions } from 'google-auth-library';
 
 const GCP_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT as string;
 const GCP_REGION = process.env.GCP_REGION || 'asia-northeast1';
 const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash-001';
 
-if (!GCP_PROJECT_ID) {
-  console.warn('GOOGLE_CLOUD_PROJECT is not set for Vertex AI. Summarization might fail or use a default project if SpeechClient is also unconfigured.');
+let googleAuthOptions: VertexGoogleAuthOptions | undefined = undefined;
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64) {
+  try {
+    const credentialsJson = Buffer.from(process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64, 'base64').toString('utf-8');
+    const credentials = JSON.parse(credentialsJson);
+    googleAuthOptions = { credentials };
+    console.log('Vertex AI client will use credentials from GOOGLE_APPLICATION_CREDENTIALS_BASE64 env var.');
+  } catch (e: any) {
+    console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_BASE64 for Vertex AI:', e.message);
+    // ここでエラーを投げるか、認証なしで進むか（現状は認証なしで進み、後でエラーになる）
+  }
+} else if (process.env.NODE_ENV !== 'production') {
+    // ローカル開発環境など、ADC (Application Default Credentials) が期待できる場合
+    console.log('GOOGLE_APPLICATION_CREDENTIALS_BASE64 not set for Vertex AI, attempting to use Application Default Credentials.');
+} else {
+    console.warn('GOOGLE_APPLICATION_CREDENTIALS_BASE64 is not set for Vertex AI in production-like environment. Authentication will likely fail.');
+}
+
+if (!GCP_PROJECT_ID && !googleAuthOptions?.credentials?.project_id) {
+  console.warn('GOOGLE_CLOUD_PROJECT is not set and cannot be inferred from credentials for Vertex AI. Summarization might fail.');
 }
 
 export interface MeetingInfo { // Also used by notion.ts, consider moving to a shared types file
@@ -34,8 +53,10 @@ export async function callGeminiToSummarize(
   console.log('Original message text:', originalMessageText);
   console.log('Meeting info from text:', meetingInfo);
 
-  if (!GCP_PROJECT_ID) { 
-      console.error('GCP Project ID for Vertex AI is not configured.');
+  const effectiveProjectId = GCP_PROJECT_ID || googleAuthOptions?.credentials?.project_id;
+
+  if (!effectiveProjectId) { 
+      console.error('GCP Project ID for Vertex AI is not configured and cannot be inferred.');
       return {
         meetingName: `Dummy Summary for: ${meetingInfo.client || 'Unknown Client'} - ${meetingInfo.date || 'Unknown Date'}`,
         meetingInfo: `Date: ${meetingInfo.date}, Client: ${meetingInfo.client}, Consultant: ${meetingInfo.consultant}`,
@@ -47,7 +68,11 @@ export async function callGeminiToSummarize(
       };
   }
 
-  const vertex_ai = new VertexAI({ project: GCP_PROJECT_ID, location: GCP_REGION });
+  const vertex_ai = new VertexAI({ 
+    project: effectiveProjectId!,
+    location: GCP_REGION,
+    googleAuthOptions: googleAuthOptions
+  });
   const model = GEMINI_MODEL_NAME;
 
   const generativeModel = vertex_ai.getGenerativeModel({ model: model });

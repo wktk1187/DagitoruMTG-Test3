@@ -26,6 +26,24 @@ export interface CreateNotionPagePayload {
   // e.g., if you have specific Notion properties for originalFileId, slackUserId, etc.
 }
 
+function createRichText(text: string | null | undefined): Array<{ type: 'text'; text: { content: string } }> | undefined {
+  return text ? [{ type: 'text' as const, text: { content: text } }] : undefined;
+}
+
+function createDateProperty(dateString: string | null | undefined): { start: string } | undefined {
+  if (!dateString) return undefined;
+  try {
+    const cleanedDate = dateString.replace(/[年]/g, '-').replace(/[月]/g, '-').replace(/[日]/g, '').trim();
+    const dateObj = new Date(cleanedDate);
+    if (!isNaN(dateObj.getTime())) {
+      return { start: dateObj.toISOString().split('T')[0] }; 
+    }
+  } catch (e) {
+    console.warn('Could not parse dateString for Notion Date property:', dateString, e);
+  }
+  return undefined;
+}
+
 export async function createNotionPageWithSummary(
   payload: CreateNotionPagePayload
 ): Promise<string> {
@@ -33,8 +51,8 @@ export async function createNotionPageWithSummary(
   const notionApiKey = process.env.NOTION_API_KEY as string;
 
   if (!dbId || !notionApiKey) {
-    console.error('Notion DB ID or API Key is not configured.');
-    return `about:blank#error-notion-config-missing-dbId-or-apiKey`;
+    console.error('Notion DB ID or API Key is not configured. Cannot create page.');
+    return `about:blank#error-notion-config-missing`;
   }
 
   console.log('Attempting to create Notion page with payload:', JSON.stringify(payload, null, 2));
@@ -45,54 +63,55 @@ export async function createNotionPageWithSummary(
     clientNameRaw,
     consultantNameRaw,
     slackFileUrl,
-    transcriptFullText, // Added for potential use in page content
+    transcriptFullText,
     summarySections,
   } = payload;
 
-  const pageTitle = title || summarySections.meetingName || '無題の議事録';
-
-  let notionDateISO: string | undefined = undefined;
-  if (meetingDateRaw) {
-    try {
-      // Handles YYYY/MM/DD, YYYY-MM-DD, YYYY年MM月DD日 by replacing non-digits for date parts
-      const cleanedDate = meetingDateRaw.replace(/[年]/g, '-').replace(/[月]/g, '-').replace(/[日]/g, '');
-      const dateObj = new Date(cleanedDate);
-      if (!isNaN(dateObj.getTime())) {
-        notionDateISO = dateObj.toISOString().split('T')[0];
-      }
-    } catch (e) {
-      console.warn('Could not parse meetingDateRaw for Notion:', meetingDateRaw, e);
-    }
-  }
+  const pageTitleContent = title || summarySections.meetingName || '無題の議事録';
   
   const properties: any = {
-    '会議名': { title: [{ type: 'text', text: { content: pageTitle } }] },
-    // Conditionally add properties if they have values
-    ...(notionDateISO && { '日時': { date: { start: notionDateISO } } }),
-    ...(clientNameRaw && { 'クライアント名': { rich_text: [{ type: 'text', text: { content: clientNameRaw } }] } }),
-    ...(consultantNameRaw && { 'コンサルタント名': { rich_text: [{ type: 'text', text: { content: consultantNameRaw } }] } }),
-    '会議の基本情報': { rich_text: [{ type: 'text', text: { content: summarySections.meetingInfo } }] },
-    '会議の目的とアジェンダ': { rich_text: [{ type: 'text', text: { content: summarySections.agenda } }] },
-    '会議の内容（議論と決定事項）': { rich_text: [{ type: 'text', text: { content: summarySections.discussion } }] },
-    '今後のスケジュール': { rich_text: [{ type: 'text', text: { content: summarySections.scheduleTasks } }] },
-    '共有情報・添付資料': { rich_text: [{ type: 'text', text: { content: `${summarySections.sharedInfo}${slackFileUrl ? `\n\n元ファイル (Slack): ${slackFileUrl}` : ''}` } }] },
-    'その他特記事項': { rich_text: [{ type: 'text', text: { content: summarySections.otherNotes } }] },
+    '会議名': { title: createRichText(pageTitleContent) },
   };
 
-  // Optional: Add full transcript as page content if transcriptFullText is provided
-  const children: any[] = [];
-  if (transcriptFullText) {
-    children.push({
+  const notionDate = createDateProperty(meetingDateRaw);
+  if (notionDate) {
+    properties['日時'] = { date: notionDate };
+  }
+
+  const clientNameText = createRichText(clientNameRaw);
+  if (clientNameText) {
+    properties['クライアント名'] = { rich_text: clientNameText };
+  }
+
+  const consultantNameText = createRichText(consultantNameRaw);
+  if (consultantNameText) {
+    properties['コンサルタント名'] = { rich_text: consultantNameText };
+  }
+
+  properties['会議の基本情報'] = { rich_text: createRichText(summarySections.meetingInfo) };
+  properties['会議の目的とアジェンダ'] = { rich_text: createRichText(summarySections.agenda) };
+  properties['会議の内容（議論と決定事項）'] = { rich_text: createRichText(summarySections.discussion) };
+  properties['今後のスケジュール'] = { rich_text: createRichText(summarySections.scheduleTasks) }; 
+  
+  let sharedInfoContent = summarySections.sharedInfo;
+  if (slackFileUrl) {
+    sharedInfoContent = `${sharedInfoContent}\n\n元ファイル (Slack): ${slackFileUrl}`.trim();
+  }
+  properties['共有情報・添付資料'] = { rich_text: createRichText(sharedInfoContent) };
+  properties['その他特記事項'] = { rich_text: createRichText(summarySections.otherNotes) };
+
+  const notionChildren: any[] = [];
+  if (transcriptFullText && transcriptFullText.trim().length > 0) {
+    notionChildren.push({
       object: 'block',
-      type: 'paragraph',
-      paragraph: {
-        rich_text: [{ type: 'text', text: { content: "議事録全文：" } }],
+      type: 'heading_2',
+      heading_2: {
+        rich_text: [{ type: 'text', text: { content: "文字起こし全文" } }],
       },
     });
-    // Split transcript into chunks if too long for a single block (Notion limit ~2000 chars/block)
-    const MAX_BLOCK_LENGTH = 1900; // Notion rich_text limit is 2000, leave some margin
+    const MAX_BLOCK_LENGTH = 1950; 
     for (let i = 0; i < transcriptFullText.length; i += MAX_BLOCK_LENGTH) {
-      children.push({
+      notionChildren.push({
         object: 'block',
         type: 'paragraph',
         paragraph: {
@@ -103,17 +122,25 @@ export async function createNotionPageWithSummary(
   }
 
   try {
+    console.log('Creating Notion page with properties:', JSON.stringify(properties, null, 2));
+    if (notionChildren.length > 0) {
+      console.log('And children (first block type):', notionChildren[0].type);
+    }
+
     const response = await notion.pages.create({
       parent: { database_id: dbId },
       properties: properties,
-      ...(children.length > 0 && { children: children }), // Add children only if there are any
+      ...(notionChildren.length > 0 && { children: notionChildren }),
     });
-    console.log('Successfully created Notion page:', (response as any).id);
+
     const pageId = (response as any).id.replace(/-/g, "");
-    return `https://www.notion.so/${pageId}`;
+    const pageUrl = `https://www.notion.so/${pageId}`;
+    console.log('Successfully created Notion page:', pageUrl);
+    return pageUrl;
 
   } catch (error: any) {
-    console.error('Error creating Notion page:', error.body || error.message || error);
+    console.error('Error creating Notion page. Request body to be sent was:', JSON.stringify({ parent: { database_id: dbId }, properties: properties, ...(notionChildren.length > 0 && { children: notionChildren }), }, null, 2));
+    console.error('Notion API Error details:', error.body || error.message || error);
     throw new Error(`Failed to create Notion page: ${error.message}`);
   }
 }
