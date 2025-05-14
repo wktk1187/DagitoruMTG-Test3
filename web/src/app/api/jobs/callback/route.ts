@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
-import { storage } from '@/libs/gcp';
-import { summarizeTranscript, callGeminiToSummarize } from '@/libs/gemini';
-import { createMeetingPage, createNotionPageWithSummary } from '@/libs/notion';
+// import { storage } from '@/libs/gcp'; // Removed as gcp.ts was deleted
+import { callGeminiToSummarize } from '@/libs/gemini';
+import { createNotionPageWithSummary } from '@/libs/notion';
 import { slackClient } from '@/libs/slack';
 
 // Helper function to extract meeting info from text
@@ -35,17 +35,19 @@ export async function POST(req: NextRequest) {
     const {
       transcript,
       jobId,
-      slackFileId,
+      // slackFileId, // Not directly used in this function yet
       originalFileName,
       slackChannelId,
       slackThreadTs,
       slackFilePermalink,
-      slackUserId,
+      // slackUserId, // Not directly used in this function yet
       originalMessageText,
-      eventTs,
+      // eventTs, // Not directly used in this function yet
+      // gcsAudioUri, // Potentially for Transcript_URL in Notion
+      // speechToTextOperationName // For logging or reference
     } = body;
 
-    if (transcript === undefined || transcript === null) { // Check for undefined or null
+    if (transcript === undefined || transcript === null) {
       console.error('Transcript missing in callback from Cloud Run for job:', jobId);
       if (slackChannelId && slackThreadTs) {
         await slackClient.chat.postMessage({
@@ -61,20 +63,18 @@ export async function POST(req: NextRequest) {
     console.log('Extracted meeting info for Notion:', meetingInfo);
 
     console.log('Calling Gemini API for summary for job:', jobId);
-    const summary = await callGeminiToSummarize(transcript, originalMessageText, meetingInfo);
-    console.log('Gemini summary received for job:', jobId, summary);
-    // TODO: Map summary content to Notion properties structure
+    const geminiSummary = await callGeminiToSummarize(transcript, originalMessageText, meetingInfo);
+    console.log('Gemini summary received for job:', jobId /*, geminiSummary*/); // Avoid logging large summary object directly
 
     console.log('Creating Notion page for job:', jobId);
     const notionPageUrl = await createNotionPageWithSummary({
-      title: originalFileName || `議事録 (${meetingInfo.date})`,
-      meetingDate: meetingInfo.date,
-      clientName: meetingInfo.client,
-      consultantName: meetingInfo.consultant,
+      title: geminiSummary.meetingName || originalFileName || `議事録 (${meetingInfo.date})`,
+      meetingDateRaw: meetingInfo.date, // Pass the raw extracted date string
+      clientNameRaw: meetingInfo.client,
+      consultantNameRaw: meetingInfo.consultant,
       slackFileUrl: slackFilePermalink,
       transcriptFullText: transcript,
-      summarySections: summary, 
-      // Add any other info needed by createNotionPageWithSummary
+      summarySections: geminiSummary, 
     });
     console.log('Notion page created for job:', jobId, notionPageUrl);
 
@@ -82,7 +82,7 @@ export async function POST(req: NextRequest) {
       await slackClient.chat.postMessage({
         channel: slackChannelId,
         thread_ts: slackThreadTs,
-        text: `:white_check_mark: 「${originalFileName || 'ファイル'}」の議事録を作成し、Notionに保存しました！\n${notionPageUrl}`,
+        text: `:white_check_mark: 「${geminiSummary.meetingName || originalFileName || 'ファイル'}」の議事録を作成し、Notionに保存しました！\n${notionPageUrl}`,
       });
     }
 
