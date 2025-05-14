@@ -77,37 +77,61 @@ export async function POST(req: NextRequest) {
 type SlackFileSharedEvent = {
   file_id: string;
   user_id: string; 
-  file: {
+  file?: {
     id: string;
-    name: string;
-    filetype: string; 
-    url_private_download: string;
-    permalink: string; 
   };
   channel_id: string;
   event_ts: string; 
   text?: string; 
 };
 
+// Define a more complete type for the file object returned by files.info
+type SlackFile = {
+    id: string;
+    name: string;
+    filetype: string;
+    url_private_download: string;
+    permalink: string;
+    // Add other fields if needed from files.info response
+};
+
 async function handleFileShared(event: SlackFileSharedEvent, originalMessageText: string) {
   console.log('Handling file_shared event:', JSON.stringify(event, null, 2));
   console.log('Original message text (if any from event.text):', originalMessageText);
 
-  const fileId = event.file?.id || event.file_id;
-  const fileInfo = event.file;
+  const fileIdFromEvent = event.file?.id || event.file_id;
   const channelId = event.channel_id;
   const threadTs = event.event_ts; 
 
-  if (!fileId || !channelId || !threadTs || !fileInfo || !fileInfo.url_private_download) {
-    console.error('Essential event information or file details missing', { fileId, channelId, threadTs, fileInfo });
-    throw new Error('Essential event information or file details missing for file processing.');
+  if (!fileIdFromEvent || !channelId || !threadTs) {
+    console.error('Missing file_id, channelId, or event_ts in file_shared event payload', event);
+    throw new Error('Essential event identification missing for file processing.');
+  }
+
+  let fileInfoFull: SlackFile;
+  try {
+    const fileInfoResult = await slackClient.files.info({ file: fileIdFromEvent });
+    if (!fileInfoResult.ok || !fileInfoResult.file) {
+      console.error('Failed to retrieve file info from Slack API or file info is missing:', fileInfoResult);
+      throw new Error(`Failed to retrieve file info for ${fileIdFromEvent}`);
+    }
+    fileInfoFull = fileInfoResult.file as SlackFile; 
+    console.log('Successfully retrieved full file info:', JSON.stringify(fileInfoFull, null, 2));
+  } catch (error: any) {
+    console.error(`Error fetching file info for ${fileIdFromEvent} from Slack:`, error.message);
+    throw new Error(`Error fetching file info from Slack: ${error.message}`);
+  }
+
+  if (!fileInfoFull.url_private_download || !fileInfoFull.name || !fileInfoFull.filetype || !fileInfoFull.permalink) {
+    console.error('Essential file details missing from fileInfoFull', fileInfoFull);
+    throw new Error('Essential file details missing after fetching from Slack API.');
   }
 
   try {
     await slackClient.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      text: `:hourglass_flowing_sand: ファイル「${fileInfo.name}」を受け付けました。処理を開始します...`,
+      text: `:hourglass_flowing_sand: ファイル「${fileInfoFull.name}」を受け付けました。処理を開始します...`,
     });
   } catch (slackError) {
     console.error('Failed to post initial ack message to Slack:', slackError);
@@ -115,20 +139,20 @@ async function handleFileShared(event: SlackFileSharedEvent, originalMessageText
 
   const topicName = process.env.PUBSUB_TOPIC || 'meeting-jobs';
   if (!topicName) {
-    throw new Error("PUBSUB_TOPIC environment variable is not set.");
+    throw new Error("PUBSUB_TOPIC env var not set.");
   }
   const jobId = randomUUID();
 
   const pubSubMessagePayload = {
     jobId,
-    slackFileId: fileId,
-    slackFileDownloadUrl: fileInfo.url_private_download,
+    slackFileId: fileIdFromEvent,
+    slackFileDownloadUrl: fileInfoFull.url_private_download,
     slackBotToken: process.env.SLACK_BOT_TOKEN,
-    originalFileName: fileInfo.name,
-    originalFileExtension: fileInfo.filetype,
+    originalFileName: fileInfoFull.name,
+    originalFileExtension: fileInfoFull.filetype,
     slackChannelId: channelId,
     slackThreadTs: threadTs,
-    slackFilePermalink: fileInfo.permalink,
+    slackFilePermalink: fileInfoFull.permalink,
     slackUserId: event.user_id,
     originalMessageText: originalMessageText,
     eventTs: event.event_ts,
@@ -139,8 +163,8 @@ async function handleFileShared(event: SlackFileSharedEvent, originalMessageText
   try {
     await pubsub.topic(topicName).publishMessage({ json: pubSubMessagePayload });
     console.log(`Message ${jobId} published to ${topicName}.`);
-  } catch (pubsubError) {
+  } catch (pubsubError: any) {
     console.error(`Failed to publish message to Pub/Sub topic ${topicName}:`, pubsubError);
-    throw new Error(`Failed to publish message to Pub/Sub: ${pubsubError}`);
+    throw new Error(`Failed to publish message to Pub/Sub: ${pubsubError.message}`);
   }
 } 
