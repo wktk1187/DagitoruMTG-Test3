@@ -4,6 +4,7 @@ import { WebClient } from '@slack/web-api';
 import { PubSub, ClientConfig } from '@google-cloud/pubsub';
 import { randomUUID } from 'node:crypto';
 import * as admin from 'firebase-admin';
+import crypto from 'node:crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,8 +74,32 @@ async function verifySlackSignature(headers: Headers, rawBody: string): Promise<
         console.error('SLACK_SIGNING_SECRET is not set. Cannot verify signature.');
         return false;
     }
-    console.warn('Slack signature verification is NOT properly implemented in this example. Please ensure it is correctly handled.');
-    return true;
+
+    const requestTimestamp = headers.get('x-slack-request-timestamp');
+    const slackSignature = headers.get('x-slack-signature');
+
+    if (!requestTimestamp || !slackSignature) {
+        console.warn('Missing Slack signature headers (x-slack-request-timestamp or x-slack-signature).');
+        return false;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - parseInt(requestTimestamp, 10)) > 60 * 5) {
+        console.warn('Slack request timestamp is too old or too far in the future.');
+        return false;
+    }
+
+    const sigBaseString = `v0:${requestTimestamp}:${rawBody}`;
+    const calculatedSignature = `v0=${crypto.createHmac('sha256', slackSigningSecret)
+                                    .update(sigBaseString, 'utf8')
+                                    .digest('hex')}`;
+
+    if (crypto.timingSafeEqual(Buffer.from(calculatedSignature, 'utf8'), Buffer.from(slackSignature, 'utf8'))) {
+        return true;
+    } else {
+        console.warn('Slack signature mismatch.');
+        return false;
+    }
 }
 
 const PUBSUB_TOPIC_NAME = process.env.PUBSUB_TOPIC_MEETING_JOBS || 'meeting-jobs';
@@ -128,8 +153,12 @@ export async function POST(req: NextRequest) {
           eventType: event.type,
         });
         console.log(`Event ID ${eventId} marked as received in Firestore.`);
-      } catch (dbError: any) {
-        console.error(`Firestore error checking/setting event ID ${eventId}:`, dbError.message);
+      } catch (dbError) {
+        if (dbError instanceof Error) {
+            console.error(`Firestore error checking/setting event ID ${eventId}:`, dbError.message);
+        } else {
+            console.error(`Firestore error checking/setting event ID ${eventId}: An unknown error occurred`, dbError);
+        }
       }
     } else if (!db) {
         console.warn('Firestore (db) is not initialized. Skipping duplicate event check.');
@@ -192,8 +221,12 @@ export async function POST(req: NextRequest) {
           await pubsub.topic(PUBSUB_TOPIC_NAME).publishMessage({ data: dataBuffer }); 
           console.log(`Message published to ${PUBSUB_TOPIC_NAME} for jobId ${jobId}.`);
 
-        } catch (e: any) {
-          console.error('Error in file_shared processing or publishing to Pub/Sub:', e.message, e.stack);
+        } catch (e) {
+            if (e instanceof Error) {
+                console.error('Error in file_shared processing or publishing to Pub/Sub:', e.message, e.stack);
+            } else {
+                console.error('Error in file_shared processing or publishing to Pub/Sub: An unknown error occurred', e);
+            }
           return NextResponse.json({ error: 'Failed to process file_shared event' }, { status: 500 });
         }
       }

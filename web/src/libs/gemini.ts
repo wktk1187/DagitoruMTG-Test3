@@ -12,9 +12,12 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64) {
     const credentials = JSON.parse(credentialsJson);
     googleAuthOptions = { credentials };
     console.log('Vertex AI client will use credentials from GOOGLE_APPLICATION_CREDENTIALS_BASE64 env var.');
-  } catch (e: any) {
-    console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_BASE64 for Vertex AI:', e.message);
-    // ここでエラーを投げるか、認証なしで進むか（現状は認証なしで進み、後でエラーになる）
+  } catch (e) {
+    if (e instanceof Error) {
+      console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_BASE64 for Vertex AI:', e.message);
+    } else {
+      console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS_BASE64 for Vertex AI: An unknown error occurred', e);
+    }
   }
 } else if (process.env.NODE_ENV !== 'production') {
     // ローカル開発環境など、ADC (Application Default Credentials) が期待できる場合
@@ -144,13 +147,18 @@ ${transcript}
       throw new Error('No text content in Gemini response');
     }
   } catch (error) {
-    console.error('Error calling Gemini API:', error);
-    // Return a dummy/error object instead of re-throwing for the callback to handle
+    let errorMessage = 'An unknown error occurred';
+    if (error instanceof Error) {
+      console.error('Error calling Gemini API:', error.message, error.stack);
+      errorMessage = error.message;
+    } else {
+      console.error('Error calling Gemini API: An unknown error occurred', error);
+    }
     return {
         meetingName: `Summary for: ${meetingInfo.client} - ${meetingInfo.date} (API Call Error)`,
         meetingInfo: `Date: ${meetingInfo.date}, Client: ${meetingInfo.client}, Consultant: ${meetingInfo.consultant}`,
         agenda: "N/A due to API error",
-        discussion: `Gemini API call failed: ${(error as Error).message}`,
+        discussion: `Gemini API call failed: ${errorMessage}`,
         scheduleTasks: "N/A due to API error",
         sharedInfo: "N/A due to API error",
         otherNotes: "N/A due to API error"
