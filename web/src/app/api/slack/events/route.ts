@@ -75,12 +75,20 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
+interface SlackFile {
+    id: string;
+    name: string;
+    filetype: string;
+    url_private_download: string;
+    permalink: string;
+    // Add other fields from files.info response if needed
+}
+
 async function handleFileShared(event: any, originalMessageText: string) {
   console.log('Handling file_shared event:', JSON.stringify(event, null, 2));
   console.log('Original message text (if any from event.text):', originalMessageText);
 
   const fileIdFromEvent = event.file?.id || event.file_id;
-  const fileInfo = event.file;
   const channelId = event.channel_id;
   const threadTs = event.event_ts; 
 
@@ -89,14 +97,14 @@ async function handleFileShared(event: any, originalMessageText: string) {
     throw new Error('Essential event identification missing for file processing.');
   }
 
-  let fileInfoFull: any;
+  let fileInfoFull: SlackFile;
   try {
     const fileInfoResult = await slackClient.files.info({ file: fileIdFromEvent });
     if (!fileInfoResult.ok || !fileInfoResult.file) {
       console.error('Failed to retrieve file info from Slack API or file info is missing:', fileInfoResult);
       throw new Error(`Failed to retrieve file info for ${fileIdFromEvent}`);
     }
-    fileInfoFull = fileInfoResult.file; 
+    fileInfoFull = fileInfoResult.file as SlackFile; 
     console.log('Successfully retrieved full file info:', JSON.stringify(fileInfoFull, null, 2));
   } catch (error: any) {
     console.error(`Error fetching file info for ${fileIdFromEvent} from Slack:`, error.message);
