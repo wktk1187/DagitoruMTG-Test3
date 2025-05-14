@@ -1,13 +1,34 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySlackSignature, slackClient } from '@/libs/slack';
-import { PubSub } from '@google-cloud/pubsub';
+import { PubSub, ClientConfig } from '@google-cloud/pubsub';
 import { randomUUID } from 'node:crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const pubsub = new PubSub();
+// Initialize PubSub client with explicit credentials from environment variables
+let pubsub: PubSub;
+const gcpCredentialsJsonString = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+const gcpProjectId = process.env.GOOGLE_CLOUD_PROJECT;
+
+if (gcpCredentialsJsonString && gcpProjectId) {
+  try {
+    const credentials = JSON.parse(gcpCredentialsJsonString);
+    const clientConfig: ClientConfig = {
+      projectId: gcpProjectId,
+      credentials,
+    };
+    pubsub = new PubSub(clientConfig);
+    console.log('PubSub client initialized WITH credentials from GOOGLE_APPLICATION_CREDENTIALS env var.');
+  } catch (e) {
+    console.error('Failed to parse GOOGLE_APPLICATION_CREDENTIALS JSON or initialize PubSub with it. Falling back to project ID only.', e);
+    pubsub = new PubSub({ projectId: gcpProjectId }); 
+  }
+} else {
+  console.warn('GOOGLE_APPLICATION_CREDENTIALS JSON string or GOOGLE_CLOUD_PROJECT env var not set. PubSub might not be initialized correctly for GCP communication.');
+  pubsub = new PubSub({ projectId: gcpProjectId }); // Attempt initialization even if only project ID is present or if both are missing (will likely fail without ADC elsewhere)
+}
 
 export async function POST(req: NextRequest) {
   // Slack からの生ボディ文字列を取得（署名検証用にそのまま使用）
