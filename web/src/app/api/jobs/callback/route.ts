@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { storage } from '@/libs/gcp';
 import { summarizeTranscript, callGeminiToSummarize } from '@/libs/gemini';

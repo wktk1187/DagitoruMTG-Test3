@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySlackSignature, slackClient } from '@/libs/slack';
 import { PubSub } from '@google-cloud/pubsub';

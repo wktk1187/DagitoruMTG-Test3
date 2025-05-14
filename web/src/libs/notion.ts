@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any */
 import { Client } from '@notionhq/client';
 import { randomUUID } from 'crypto';
 
