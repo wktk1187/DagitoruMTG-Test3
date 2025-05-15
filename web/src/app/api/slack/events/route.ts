@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
           const jobId = randomUUID();
           const messagePayload = {
             jobId: jobId,
-            slackFileId: fileId,
+            originalFileId: fileId,
             slackFileDownloadUrl: downloadUrl,
             slackBotToken: slackToken, 
             originalFileName: originalFileName,
