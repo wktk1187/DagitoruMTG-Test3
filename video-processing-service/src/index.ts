@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { SpeechClient, protos } from '@google-cloud/speech';
 import { Storage } from '@google-cloud/storage';
+import * as admin from 'firebase-admin';
 
 dotenv.config();
 
@@ -27,6 +28,11 @@ if (!GCS_BUCKET_NAME) {
   // For critical env vars, you might want to throw an error:
   // throw new Error("GCS_BUCKET_NAME environment variable is not set.");
 }
+
+if (!admin.apps.length) {
+  admin.initializeApp();
+}
+const firestore = admin.firestore();
 
 app.use(express.json());
 
@@ -57,13 +63,47 @@ const postHandler: RequestHandler = async (req, res) => {
     pubSubMessageData = JSON.parse(messageDataString);
     console.log('Successfully decoded message data:', pubSubMessageData);
 
-    const { slackFileDownloadUrl, slackBotToken, originalFileId, originalFileExtension } = pubSubMessageData;
+    const { slackFileDownloadUrl, slackBotToken, originalFileId, originalFileExtension, jobId } = pubSubMessageData;
 
     if (!slackFileDownloadUrl || !slackBotToken || !originalFileId) {
       console.error('Missing required fields in messageData for download:', pubSubMessageData);
       res.status(400).send('Bad Request: Missing download URL, token, or file ID.');
       return;
     }
+
+    let originalMessageText = pubSubMessageData.originalMessageText;
+    let usedFirestoreFallback = false;
+    if (originalMessageText === undefined || originalMessageText === null) {
+      if (jobId) {
+        const jobDoc = await firestore.doc(`processedMeetingJobs/${jobId}`).get();
+        if (jobDoc.exists && jobDoc.data()?.originalMessageText !== undefined) {
+          originalMessageText = jobDoc.data()?.originalMessageText;
+          usedFirestoreFallback = true;
+        }
+      }
+      if (originalMessageText === undefined || originalMessageText === null) {
+        console.warn('originalMessageText missing, even after Firestore fallback', { jobId });
+        res.status(202).json({ message: 'Awaiting messageText event', jobId });
+        return;
+      }
+    }
+
+    if (jobId) {
+      await firestore.doc(`processedMeetingJobs/${jobId}`).set({
+        ...pubSubMessageData,
+        originalMessageText,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+
+    console.log(JSON.stringify({
+      jobId,
+      usedFirestoreFallback,
+      originalMessageTextLength: originalMessageText?.length || 0,
+      event: 'messageTextChecked',
+    }));
+
+    pubSubMessageData.originalMessageText = originalMessageText;
 
     console.log(`Attempting to download video from: ${slackFileDownloadUrl}`);
     const downloadResponse = await axios({
