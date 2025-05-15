@@ -1,18 +1,23 @@
 # IAM bindings for Cloud Run service
 
-# Data source to get the default compute service account email
-data "google_compute_default_service_account" "default" {
-  project = data.google_project.current.project_id
-}
+# Data source to get the default compute service account email (can be removed if not used elsewhere)
+# data "google_compute_default_service_account" "default" {
+#   project = data.google_project.current.project_id
+# }
 
-# Allow Pub/Sub to invoke the Cloud Run service
-resource "google_cloud_run_v2_service_iam_member" "dagitoru_processor_invoker" {
+# Allow the video_processor_sa (which PubSub will use for OIDC token generation)
+# to invoke the Cloud Run service.
+resource "google_cloud_run_v2_service_iam_member" "video_processor_sa_can_invoke_self" { 
   project  = google_cloud_run_v2_service.dagitoru_processor.project
   location = google_cloud_run_v2_service.dagitoru_processor.location
   name     = google_cloud_run_v2_service.dagitoru_processor.name
   role     = "roles/run.invoker"
-  member   = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-pubsub.iam.gserviceaccount.com"
+  member   = "serviceAccount:${google_service_account.video_processor_sa.email}"
 }
+
+# The previous invoker for the Google-managed Pub/Sub SA is removed as OIDC token
+# will be based on video_processor_sa.
+# resource "google_cloud_run_v2_service_iam_member" "dagitoru_processor_invoker" { ... }
 
 # Example: Granting Pub/Sub Admin to the Cloud Run service account (if it needs to manage Pub/Sub)
 # resource "google_project_iam_member" "cloud_run_pubsub_admin" {

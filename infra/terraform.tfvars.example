@@ -1,0 +1,17 @@
+# GCPプロジェクト・環境ごとに値を変更して利用
+project_id         = "your-gcp-project-id"
+region             = "asia-northeast1"
+service_account_name = "video-processing-sa"
+bucket_name        = "your-bucket-name"
+environment        = "dev"
+
+# シークレット類（本番値は直接書かず、CI/CDやSecret Manager経由で注入推奨）
+notion_api_key     = "sk-..."
+slack_bot_token    = "xoxb-..."
+vercel_callback_url = "https://your-app.vercel.app/api/jobs/callback"
+
+notion_retry_job_image           = "gcr.io/your-project/notion-retry-job:latest"
+notion_retry_job_cloud_run_url   = "https://your-cloud-run-url"
+notion_retry_job_invoker_sa      = "notion-retry-invoker@your-gcp-project-id.iam.gserviceaccount.com"
+
+# ※ 本番値やシークレットはこのexampleファイルに絶対に書かないでください 

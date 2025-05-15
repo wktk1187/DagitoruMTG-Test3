@@ -8,22 +8,38 @@ resource "google_cloud_run_v2_service" "dagitoru_processor" {
   template {
     service_account = google_service_account.video_processor_sa.email
     containers {
-      image = "us-docker.pkg.dev/cloudrun/container/hello" # Dummy image for now
+      image = "asia-northeast1-docker.pkg.dev/mettinglog/dagitoru-repository/video-processor:latest" # Updated image path
       ports {
         container_port = 8080 # Port for the dummy image
       }
       resources {
         limits = {
           cpu    = "1000m" # 1 CPU
-          memory = "512Mi" # 512MB (adjust as needed)
+          memory = "1Gi" # 1GB (adjust as needed)
         }
+      }
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = data.google_project.current.project_id
+      }
+      env {
+        name  = "GCS_BUCKET_NAME"
+        value = google_storage_bucket.meeting_audio_staging.name
+      }
+      env {
+        name  = "SLACK_BOT_TOKEN"
+        value = var.slack_bot_token
+      }
+      env {
+        name  = "CALLBACK_TO_VERCEL_URL"
+        value = var.vercel_callback_url
       }
     }
     scaling {
       min_instance_count = 0 # Cost-effective, but cold starts
-      max_instance_count = 1 # MVP: 1 instance (adjust as needed)
+      max_instance_count = 2 # MVP: 2 instances (adjust as needed)
     }
-    timeout = "900s" # Max execution time (e.g., 15 minutes, adjust as needed)
+    timeout = "1800s" # Max execution time (e.g., 30 minutes, adjust as needed)
   }
 
   traffic {

@@ -19,8 +19,8 @@ resource "google_pubsub_subscription" "meeting_jobs_push_subscription" {
     push_endpoint = google_cloud_run_v2_service.dagitoru_processor.uri # Cloud Run service URI
 
     oidc_token {
-      service_account_email = data.google_compute_default_service_account.default.email # SA for Cloud Run execution
-      # audience = "YOUR_CUSTOM_AUDIENCE" # Optional: if Cloud Run service expects a specific audience
+      service_account_email = google_service_account.video_processor_sa.email # Changed to dedicated SA
+      audience              = google_cloud_run_v2_service.dagitoru_processor.uri # Added audience
     }
   }
 
@@ -41,6 +41,7 @@ resource "google_pubsub_subscription" "meeting_jobs_push_subscription" {
 
   depends_on = [
     google_cloud_run_v2_service.dagitoru_processor,
-    google_pubsub_topic.meeting_jobs_topic
+    google_pubsub_topic.meeting_jobs_topic,
+    google_service_account.video_processor_sa // Added explicit dependency
   ]
 } 
