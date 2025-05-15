@@ -3,7 +3,7 @@ import { GoogleAuthOptions as VertexGoogleAuthOptions } from 'google-auth-librar
 
 const GCP_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT as string;
 const GCP_REGION = process.env.GCP_REGION || 'asia-northeast1';
-const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-1.5-flash-001';
+const GEMINI_MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-pro';
 
 let googleAuthOptions: VertexGoogleAuthOptions | undefined = undefined;
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64) {
